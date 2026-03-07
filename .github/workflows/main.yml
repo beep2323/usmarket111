@@ -1,0 +1,43 @@
+name: Daily Stock Scanner KST
+
+on:
+  schedule:
+    - cron: '0 21 * * *' # 韩国时间 06:00 (UTC 21:00)
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas openpyxl requests googletrans==4.0.0-rc1
+
+      - name: Run Scanner Script
+        # 这里加上参数，确保目录存在
+        run: |
+          mkdir -p output
+          mkdir -p ticker_storage
+          python scanner.py --use-data-cache
+
+      - name: Send Telegram Notification
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python notif.py
+
+      - name: Upload Artifact
+        if: always() # 即使通知失败，也把文件存到 GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stock_Report
+          path: output/*.xlsx # 使用通配符匹配动态文件名
