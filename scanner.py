@@ -8,16 +8,17 @@ import requests
 import json
 from pathlib import Path
 
-# 延时参数 - 快速模式
-REQUEST_DELAY_MIN = 0.1
-REQUEST_DELAY_MAX = 0.3
-BATCH_SIZE = 100
-BATCH_PAUSE = 2
+# 延时参数 - GitHub Actions 安全模式
+REQUEST_DELAY_MIN = 0.5  # 增加最小延时
+REQUEST_DELAY_MAX = 1.5  # 增加最大延时，模拟真人随机停顿
+BATCH_SIZE = 50          # 缩小每批次的数量，防止长连接被掐断
+BATCH_PAUSE = 5          # 批次之间的休息时间加长到 5 秒
 
 # API请求限制参数
-API_REQUEST_DELAY = 1
-MAX_RETRIES = 5
-RETRY_BACKOFF = 2
+API_REQUEST_DELAY = 2    # 纳斯达克列表 API 请求间隔加长
+YFINANCE_DELAY = 0.5     # yfinance 请求延时
+MAX_RETRIES = 5          # 重试次数保持不变
+RETRY_BACKOFF = 3        # 如果被封，退避倍数加大（等待时间更长）
 
 # 目录设置
 TICKER_STORAGE_DIR = Path("ticker_storage")
