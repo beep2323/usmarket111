@@ -760,4 +760,194 @@ def is_strong_stock(symbol, name, delisted_stocks=None):
                 "52周最低": round(fifty_two_week_low, 2) if fifty_two_week_low > 0 else "N/A",
                 "距52周低点": f"{round(pct_from_low, 2)}%" if fifty_two_week_low > 0 else "N/A",
                 "日期": first_trade_date,
-                "收盘价": round(close_val
+                "收盘价": round(close_val, 2),
+                "市值": market_cap_display,
+                "行业": industry_display,
+                "MA5": round(ma5_val, 2),
+                "MACD": round(macd_val, 4),
+                "MACD_DEA": round(dea_val, 4),
+                "成交量倍数": round(vol_val / vol_ma5_val, 2),
+                "20天涨幅": round(rs_20d_float * 100, 2),
+                "满足条件": f"{met_conditions}/{total_conditions}",
+                "条件详情": '|'.join([k for k, v in conditions.items() if v])
+            }
+            
+            if USE_DATA_CACHE:
+                save_stock_data_to_cache(symbol, result)
+            return result
+        else:
+            negative_result = {
+                "代码": symbol,
+                "日期": latest.name.strftime('%Y-%m-%d') if hasattr(latest.name, 'strftime') else str(latest.name)[:10],
+                "不符合条件": True,
+                "满足条件": f"{met_conditions}/{total_conditions}"
+            }
+            if USE_DATA_CACHE:
+                save_stock_data_to_cache(symbol, negative_result)
+            return None
+            
+    except Exception as e:
+        error_str = str(e).lower()
+        if any(keyword in error_str for keyword in ['delisted', 'no data', 'not found', 'invalid']):
+            if delisted_stocks is not None:
+                save_delisted_stock(symbol)
+        return None
+
+    return None
+
+def check_breakout(symbol, name, delisted_stocks=None):
+    return is_strong_stock(symbol, name, delisted_stocks)
+
+def get_output_filename():
+    """生成带本地系统日期小时后缀的文件名"""
+    now = datetime.datetime.now()
+    market_suffix = "us"
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    return str(output_dir / f"strong_stocks_{market_suffix}_{now.strftime('%Y%m%d_%H')}.xlsx")
+
+def scan_market():
+    start_time = datetime.datetime.now()
+    print(f"\n{'='*60}")
+    market_name = "美股"
+    print(f"开始扫描{market_name}强势股票...")
+    print(f"扫描条件: MA5>MA10 + MA10>MA20 + 价格>MA5 + MACD金叉为正 + 成交量不过度萎缩 + 20天涨幅>15% (必须满足全部6个条件 6/6)")
+    print(f"排序规则: 按市值从低到高排序")
+    print(f"过滤条件: 排除ETF/基金/权证/SPAC + 市值过滤(市值<1万亿美金) + 52周波动幅度>={MIN_WEEK52_VOLATILITY}%")
+    print(f"开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}\n")
+    
+    if CLEAR_CACHE:
+        clear_all_cache()
+    
+    delisted_stocks = load_delisted_stocks()
+    
+    codes = get_all_stock_codes()
+    
+    if delisted_stocks:
+        original_count = len(codes)
+        codes = [(code, name) for code, name in codes if code not in delisted_stocks]
+        filtered_count = original_count - len(codes)
+        if filtered_count > 0:
+            print(f"🚫 已过滤 {filtered_count} 只已退市股票\n")
+    
+    if TEST_LIMIT > 0:
+        codes = codes[:TEST_LIMIT]
+        print(f"⚠️  测试模式：只扫描前 {TEST_LIMIT} 只股票\n")
+    
+    print(f"📊 总共需要扫描 {len(codes)} 只股票")
+    cache_strategy = "使用股票数据缓存，新数据实时更新" if USE_DATA_CACHE else "只缓存ticker列表，股票数据实时获取"
+    print(f"💾 缓存策略：{cache_strategy}\n")
+    
+    results = []
+    skipped = [] 
+    output_file = get_output_filename()
+
+    for idx, (code, name) in enumerate(codes, 1):
+        code_str = str(code).strip()
+        name_str = str(name)
+        print(f"[{idx:4d}/{len(codes)}] 🔍 扫描: {code_str:8s}")
+        try:
+            res = check_breakout(code_str, name_str, delisted_stocks)
+            if res:
+                results.append(res)
+                def sort_key(x):
+                    market_cap_val = 0
+                    market_cap_str = x.get('市值', 'N/A')
+                    if market_cap_str != 'N/A' and market_cap_str.startswith('$'):
+                        try:
+                            value_str = market_cap_str[1:]
+                            if value_str.endswith('B'):
+                                market_cap_val = float(value_str[:-1]) * 1_000_000_000
+                            elif value_str.endswith('M'):
+                                market_cap_val = float(value_str[:-1]) * 1_000_000
+                            else:
+                                market_cap_val = float(value_str.replace(',', ''))
+                        except:
+                            market_cap_val = 0
+                    return market_cap_val
+                
+                results.sort(key=sort_key)
+                log_strong_stock(res)
+                print(f"✅ 找到强势股票（6/6满足全部条件）！当前共 {len(results)} 只：")
+                print(f"   {code}: 收盘价=${res['收盘价']}, 满足{res['满足条件']}条件, 20天涨幅{res['20天涨幅']}%")
+            else:
+                pass
+        except Exception as e:
+            print(f"❌ 扫描 {code} 时出错: {e}")
+            skipped.append((code, name))
+
+        time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
+
+        if idx % BATCH_SIZE == 0:
+            elapsed = (datetime.datetime.now() - start_time).total_seconds()
+            print(f"\n⏸️  已扫描 {idx} 只，休息 {BATCH_PAUSE} 秒，防止被封 IP...")
+            print(f"   已用时: {elapsed:.1f} 秒，进度: {idx/len(codes)*100:.1f}%")
+            if results:
+                print(f"   📈 当前强势股票前3名（6/6满足全部条件）:")
+                for i, top_stock in enumerate(results[:3], 1):
+                    market_cap_info = f", 市值{top_stock.get('市值', 'N/A')}" if top_stock.get('市值', 'N/A') != 'N/A' else ""
+                    print(f"     {i}. {top_stock['代码']}{market_cap_info}")
+            time.sleep(BATCH_PAUSE)
+            print()
+
+    end_time = datetime.datetime.now()
+    elapsed_time = (end_time - start_time).total_seconds()
+
+    def sort_key(x):
+        market_cap_val = 0
+        market_cap_str = x.get('市值', 'N/A')
+        if market_cap_str != 'N/A' and market_cap_str.startswith('$'):
+            try:
+                value_str = market_cap_str[1:]
+                if value_str.endswith('B'):
+                    market_cap_val = float(value_str[:-1]) * 1_000_000_000
+                elif value_str.endswith('M'):
+                    market_cap_val = float(value_str[:-1]) * 1_000_000
+                else:
+                    market_cap_val = float(value_str.replace(',', ''))
+            except:
+                market_cap_val = 0
+        return market_cap_val
+    
+    results.sort(key=sort_key)
+    df = pd.DataFrame(results)
+    
+    print(f"\n{'='*60}")
+    print(f"扫描完成！")
+    print(f"结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"总用时: {elapsed_time:.1f} 秒 ({elapsed_time/60:.1f} 分钟)")
+    print(f"扫描股票数: {len(codes)}")
+    print(f"符合条件的股票: {len(results)} 只")
+    print(f"跳过的股票: {len(skipped)} 只")
+    if skipped and len(skipped) <= 20:
+        print(f"跳过的股票代码: {[code for code, _ in skipped]}")
+    elif skipped:
+        print(f"跳过的股票代码（前20只）: {[code for code, _ in skipped[:20]]}")
+    print(f"{'='*60}\n")
+    
+    if results:
+        try:
+            df.to_excel(output_file, index=False)
+            print(f"📊 按市值从低到高排序完成（所有股票均满足全部6个条件）！")
+            if len(results) >= 5:
+                print(f"🏆 前5强势股票（6/6满足全部条件）:")
+                for i, stock in enumerate(results[:5], 1):
+                    print(f"   {i}. {stock['代码']} - {stock['满足条件']} 条件 - ${stock['收盘价']}")
+            print()
+        except PermissionError:
+            print(f"❌ 无法写入 {output_file}，请关闭 Excel 文件后重试。")
+    
+    return df, output_file
+
+if __name__ == "__main__":
+    result_df, output_file = scan_market()
+    if not result_df.empty:
+        print("\n📋 扫描结果详情（按市值从低到高排序，所有股票均满足全部6个条件）：")
+        print("="*80)
+        print(result_df.to_string(index=False))
+        print("="*80)
+        print(f"\n✅ 结果已保存到: {output_file}")
+        print(f"📁 共 {len(result_df)} 只符合条件的股票（6/6满足全部条件，已按市值从低到高排序）\n")
+    else:
+        print("\n⚠️  今天没有找到同时满足全部6个条件（6/6）的强势股票。\n")
