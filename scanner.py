@@ -198,33 +198,33 @@ def is_strong_stock(symbol, delisted_stocks=None):
     if delisted_stocks and symbol in delisted_stocks: return None
     
     try:
-        if USE_DATA_CACHE:
-            cached = load_cached_stock_data(symbol)
-            if cached and cached.get('日期') == datetime.datetime.now().strftime('%Y-%m-%d'):
-                return cached
-                
         normalized_symbol = normalize_ticker_symbol(symbol)
         
+        # --- 第一部分：获取 Info（这一步在 GitHub 很容易失败，设为“参考项”而非“必杀项”） ---
+        market_cap = 0
+        week_52_range_pct = 999  # 默认通过
         try:
-            info = yf.Ticker(normalized_symbol).info
-            if not info: return None
-            market_cap = info.get('marketCap', 0)
-            fifty_two_week_high = info.get('fiftyTwoWeekHigh', 0)
-            fifty_two_week_low = info.get('fiftyTwoWeekLow', 0)
-            
-            if market_cap and market_cap > 1_000_000_000_000: return None
-            
-            week_52_range_pct = 0
-            if fifty_two_week_low > 0 and fifty_two_week_high > 0:
-                week_52_range_pct = ((fifty_two_week_high - fifty_two_week_low) / fifty_two_week_low) * 100
-                if week_52_range_pct < MIN_WEEK52_VOLATILITY: return None
+            ticker = yf.Ticker(normalized_symbol)
+            info = ticker.info
+            if info:
+                market_cap = info.get('marketCap', 0)
+                high = info.get('fiftyTwoWeekHigh', 0)
+                low = info.get('fiftyTwoWeekLow', 0)
+                # 只有明确拿到数据且超过 1万亿才过滤
+                if market_cap and market_cap > 1_000_000_000_000: return None
+                # 只有明确拿到数据且确实小于阈值才过滤
+                if low and low > 0:
+                    week_52_range_pct = ((high - low) / low) * 100
+                    if week_52_range_pct < MIN_WEEK52_VOLATILITY: return None
         except:
-            market_cap = 0; fifty_two_week_high = 0; fifty_two_week_low = 0; week_52_range_pct = 0
+            # 如果 info 抓不到，不跳出，继续走下面的技术面扫描
+            pass 
             
+        # --- 第二部分：核心技术面（用 download 接口，这个更稳） ---
         df = yf.download(normalized_symbol, period="3mo", interval="1d", progress=False, auto_adjust=True)
         if df.empty or len(df) < 25: return None
         
-        # 仅保留 MA5
+        # 计算指标（只留你关心的 MA5 和 MACD）
         df['MA5'] = df['Close'].rolling(5).mean()
         df['MACD_diff'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
         df['MACD_dea'] = df['MACD_diff'].ewm(span=9).mean()
@@ -233,65 +233,34 @@ def is_strong_stock(symbol, delisted_stocks=None):
         
         latest = df.iloc[-1]
         
-        required_fields = ['MA5', 'Close', 'MACD_diff', 'MACD_dea', 'Volume', 'VolMA5']
-        for field in required_fields:
-            if pd.isna(latest[field]).any() if hasattr(pd.isna(latest[field]), 'any') else pd.isna(latest[field]):
-                return None
-                
-        ma5_val = float(latest['MA5'].iloc[0]) if isinstance(latest['MA5'], pd.Series) else float(latest['MA5'])
-        close_val = float(latest['Close'].iloc[0]) if isinstance(latest['Close'], pd.Series) else float(latest['Close'])
-        macd_val = float(latest['MACD_diff'].iloc[0]) if isinstance(latest['MACD_diff'], pd.Series) else float(latest['MACD_diff'])
-        dea_val = float(latest['MACD_dea'].iloc[0]) if isinstance(latest['MACD_dea'], pd.Series) else float(latest['MACD_dea'])
-        vol_val = float(latest['Volume'].iloc[0]) if isinstance(latest['Volume'], pd.Series) else float(latest['Volume'])
-        vol_ma5_val = float(latest['VolMA5'].iloc[0]) if isinstance(latest['VolMA5'], pd.Series) else float(latest['VolMA5'])
-        
-        conditions = {
-            '价格强势': close_val > ma5_val,
-            'MACD信号': macd_val > dea_val and macd_val > 0,
-            '成交量': vol_val > vol_ma5_val * 0.5,
-        }
-        
-        rs_20d_float = 0
-        if 'RS_20d' in latest.index:
-            rs_raw = latest['RS_20d']
-            if not (pd.isna(rs_raw).any() if isinstance(rs_raw, pd.Series) else pd.isna(rs_raw)):
-                rs_20d_float = float(rs_raw.iloc[0]) if isinstance(rs_raw, pd.Series) else float(rs_raw)
-                conditions['相对强度'] = rs_20d_float > 0.15
-                
-        met_conditions = sum(conditions.values())
-        total_conditions = len(conditions) # 应该是 4
-        
-        if met_conditions == total_conditions and total_conditions == 4:
-            market_cap_display = "N/A"
-            if market_cap:
-                if market_cap >= 1_000_000_000: market_cap_display = f"${market_cap / 1_000_000_000:.2f}B"
-                elif market_cap >= 1_000_000: market_cap_display = f"${market_cap / 1_000_000:.2f}M"
-                else: market_cap_display = f"${market_cap:,.0f}"
-                
-            pct_from_high = ((close_val - fifty_two_week_high) / fifty_two_week_high) * 100 if fifty_two_week_high > 0 else 0
-            pct_from_low = ((close_val - fifty_two_week_low) / fifty_two_week_low) * 100 if fifty_two_week_low > 0 else 0
-            
-            result = {
+        # 提取数值并强制转换，防止 pandas 类型报错
+        close_val = float(latest['Close'])
+        ma5_val = float(latest['MA5'])
+        macd_val = float(latest['MACD_diff'])
+        dea_val = float(latest['MACD_dea'])
+        vol_val = float(latest['Volume'])
+        vol_ma5_val = float(latest['VolMA5'])
+        rs_20d = float(latest['RS_20d']) if not pd.isna(latest['RS_20d']).any() else 0
+
+        # --- 核心条件判断 ---
+        cond1 = close_val > ma5_val                 # 价格在5日线上
+        cond2 = macd_val > dea_val and macd_val > 0 # MACD水上金叉
+        cond3 = vol_val > (vol_ma5_val * 0.5)       # 成交量别太缩
+        cond4 = rs_20d > 0.10                       # 20天涨幅 > 10% (你可以根据需要改回 0.15)
+
+        if cond1 and cond2 and cond3 and cond4:
+            # 格式化市值
+            cap_disp = f"${market_cap/1e9:.1f}B" if market_cap > 0 else "N/A"
+            return {
                 "代码": symbol,
-                "52周波动": f"{round(week_52_range_pct, 2)}%" if week_52_range_pct > 0 else "N/A",
-                "距52周高点": f"{round(pct_from_high, 2)}%" if fifty_two_week_high > 0 else "N/A",
-                "距52周低点": f"{round(pct_from_low, 2)}%" if fifty_two_week_low > 0 else "N/A",
                 "收盘价": round(close_val, 2),
-                "市值": market_cap_display,
-                "MA5": round(ma5_val, 2),
-                "成交量倍数": round(vol_val / vol_ma5_val, 2),
-                "20天涨幅": round(rs_20d_float * 100, 2),
-                "满足条件": f"{met_conditions}/{total_conditions}",
+                "20天涨幅": f"{round(rs_20d * 100, 2)}%",
+                "市值": cap_disp,
+                "满足条件": "4/4"
             }
-            if USE_DATA_CACHE: save_stock_data_to_cache(symbol, result)
-            return result
-        else:
-            if USE_DATA_CACHE: save_stock_data_to_cache(symbol, {"代码": symbol, "不符合条件": True})
-            return None
-    except Exception as e:
-        if any(k in str(e).lower() for k in ['delisted', 'no data', 'not found', 'invalid']):
-            if delisted_stocks is not None: save_delisted_stock(symbol)
+    except:
         return None
+    return None
 
 def get_output_filename():
     now = datetime.datetime.now()
