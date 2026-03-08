@@ -20,10 +20,6 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests fpdf  # 加上 fpdf
-
-      - name: Install Dependencies
-        run: |
           pip install yfinance pandas openpyxl requests googletrans==4.0.0-rc1
 
       - name: Run Scanner Script
@@ -31,13 +27,13 @@ jobs:
         run: |
           mkdir -p output
           mkdir -p ticker_storage
-          python test_scanner.py --use-data-cache
+          python scanner.py --use-data-cache
 
       - name: Send Telegram Notification
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python test_notif.py
+        run: python notif.py
 
       - name: Upload Artifact
         if: always() # 即使通知失败，也把文件存到 GitHub
