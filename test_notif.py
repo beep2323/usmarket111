@@ -1,34 +1,33 @@
 import os
 import requests
+import glob
 
-def test_send():
-    # 从 GitHub Secrets 读取
+def send_to_tg():
     token = os.getenv('TG_BOT_TOKEN')
     chat_id = os.getenv('TG_CHAT_ID')
     
-    print(f"正在尝试发送到 Chat ID: {chat_id}")
+    # 1. 寻找生成的 PDF 文件
+    list_of_files = glob.glob('output/*.pdf') 
+    if not list_of_files:
+        print("❌ 未发现生成的 PDF 文件")
+        return
     
-    # 构造一条简单的测试消息
-    msg = "🚀 **GitHub Actions 配置测试成功！**\n\n如果你能看到这条消息，说明 Token 和 Chat ID 都配置对了。"
-    
-    # 执行发送
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": msg,
-        "parse_mode": "Markdown"
-    }
-    
-    response = requests.post(url, json=payload)
-    
-    # 打印详细结果，方便在 GitHub Actions 日志里排查
-    print(f"状态码: {response.status_code}")
-    print(f"返回内容: {response.text}")
+    latest_file = max(list_of_files, key=os.path.getctime)
+    file_name = os.path.basename(latest_file)
 
-    if response.status_code == 200:
-        print("✅ 频道应该已经收到消息了！")
-    else:
-        print("❌ 发送失败，请根据上面的返回内容排查原因。")
+    # 2. 发送文字（去掉 Markdown 避免干扰）
+    summary_msg = f"✅ 测试通知\n文件：{file_name}\n结果：3 + 45 = 48"
+    
+    r1 = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
+                      json={"chat_id": chat_id, "text": summary_msg})
+    print(f"文字发送状态: {r1.status_code}, 返回: {r1.text}")
+
+    # 3. 发送 PDF 附件
+    with open(latest_file, "rb") as f:
+        r2 = requests.post(f"https://api.telegram.org/bot{token}/sendDocument", 
+                          data={"chat_id": chat_id}, 
+                          files={"document": f})
+        print(f"文件发送状态: {r2.status_code}, 返回: {r2.text}")
 
 if __name__ == "__main__":
-    test_send()
+    send_to_tg()
