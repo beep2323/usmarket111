@@ -2,13 +2,14 @@ name: Daily Stock Scanner KST
 
 on:
   schedule:
-    - cron: '0 21 * * *' # 韩国时间 06:00 (UTC 21:00)
+    - cron: '0 21 * * *' # KST 06:00 -> US
+    - cron: '0 11 * * *' # KST 20:00 -> KR
   workflow_dispatch:
 
 jobs:
   build-and-run:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -22,22 +23,38 @@ jobs:
         run: |
           pip install yfinance pandas openpyxl requests googletrans==4.0.0-rc1
 
-      - name: Run Scanner Script
-        # 这里加上参数，确保目录存在
+      - name: Prepare Directories
         run: |
           mkdir -p output
           mkdir -p ticker_storage
-          python scanner.py --use-data-cache
+          mkdir -p cache
+          mkdir -p cache_kr
+
+      - name: Run US Scanner
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 21 * * *'
+        run: python scanner.py --use-data-cache
+
+      - name: Run KR Scanner
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 11 * * *'
+        run: python ko_scanner.py --use-data-cache
+
+      - name: Analyze Stocks With Qwen
+        env:
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          QWEN_MODEL: ${{ secrets.QWEN_MODEL }}
+          QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
+        run: python analyze_with_qwen.py
 
       - name: Send Telegram Notification
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SEND_EXCEL_ATTACHMENTS: ${{ secrets.SEND_EXCEL_ATTACHMENTS }}
         run: python notif.py
 
       - name: Upload Artifact
-        if: always() # 即使通知失败，也把文件存到 GitHub
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Stock_Report
-          path: output/*.xlsx # 使用通配符匹配动态文件名
+          path: output/*
