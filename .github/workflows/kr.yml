@@ -1,0 +1,53 @@
+name: KR Stock Scanner KST
+
+on:
+  schedule:
+    - cron: '0 11 * * *' # KST 20:00
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas openpyxl requests lxml googletrans==4.0.0-rc1
+
+      - name: Prepare Directories
+        run: |
+          mkdir -p output
+          mkdir -p ticker_storage
+          mkdir -p cache_kr
+
+      - name: Run KR Scanner
+        run: python ko_scanner.py --use-data-cache
+
+      - name: Analyze KR Stocks With Qwen
+        env:
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          QWEN_MODEL: ${{ secrets.QWEN_MODEL }}
+          QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
+        run: python analyze_with_qwen.py kr
+
+      - name: Send Telegram Notification
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SEND_EXCEL_ATTACHMENTS: ${{ secrets.SEND_EXCEL_ATTACHMENTS }}
+        run: python notif.py kr
+
+      - name: Upload Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-stock-report
+          path: output/*
