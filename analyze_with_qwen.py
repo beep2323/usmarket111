@@ -54,6 +54,17 @@ def get_market():
     return sys.argv[1]
 
 
+def report_path(market: str) -> Path:
+    return OUTPUT_DIR / f"stock_analysis_report_{market}.md"
+
+
+def save_report(market: str, text: str):
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    path = report_path(market)
+    path.write_text(text + "\n", encoding="utf-8")
+    return path
+
+
 def latest_file(pattern: str):
     files = glob.glob(pattern)
     if not files:
@@ -61,17 +72,28 @@ def latest_file(pattern: str):
     return max(files, key=os.path.getctime)
 
 
+def get_excel_path(market: str):
+    if market == "us":
+        return latest_file("output/strong_stocks_us_*.xlsx")
+    return latest_file("output/strong_stocks_kr_*.xlsx")
+
+
 def load_frame(file_path: str | None, market: str) -> pd.DataFrame:
     if not file_path:
         return pd.DataFrame()
 
-    df = pd.read_excel(file_path)
+    try:
+        df = pd.read_excel(file_path)
+    except Exception as exc:
+        raise RuntimeError(f"Excel 读取失败: {file_path} -> {exc}") from exc
+
     if df.empty:
         return df
 
     df = df.copy()
     if "名称" not in df.columns:
         df["名称"] = ""
+
     df["市场"] = market.upper()
 
     keep_cols = [
@@ -92,20 +114,23 @@ def load_frame(file_path: str | None, market: str) -> pd.DataFrame:
         "条件详情",
     ]
     existing = [c for c in keep_cols if c in df.columns]
+    if not existing:
+        raise RuntimeError("Excel 中没有识别到可用字段，无法构造分析输入。")
+
     return df[existing].fillna("")
 
 
 def build_payload(market: str):
-    if market == "us":
-        file_path = latest_file("output/strong_stocks_us_*.xlsx")
-    else:
-        file_path = latest_file("output/strong_stocks_kr_*.xlsx")
+    file_path = get_excel_path(market)
+    if not file_path:
+        return "", None, 0
 
     df = load_frame(file_path, market)
     if df.empty:
-        return "", None
+        return "", file_path, 0
 
-    return json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2), file_path
+    payload = json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2)
+    return payload, file_path, len(df)
 
 
 def build_final_prompt(market: str, payload: str) -> str:
@@ -125,67 +150,117 @@ def build_final_prompt(market: str, payload: str) -> str:
 """
 
 
+def get_required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"缺少环境变量: {name}")
+    return value
+
+
 def call_qwen(prompt_text: str) -> str:
-    api_key = os.getenv("QWEN_API_KEY")
-    model = os.getenv("QWEN_MODEL")
-    base_url = os.getenv("QWEN_BASE_URL")
+    api_key = get_required_env("QWEN_API_KEY")
+    model = get_required_env("QWEN_MODEL")
+    base_url = get_required_env("QWEN_BASE_URL")
 
-    if not api_key:
-        raise RuntimeError("缺少 QWEN_API_KEY")
-    if not model:
-        raise RuntimeError("缺少 QWEN_MODEL")
-    if not base_url:
-        raise RuntimeError("缺少 QWEN_BASE_URL")
-
-    response = requests.post(
-        base_url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "temperature": 0.4,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你是短线右侧交易分析助手。必须严格依据用户给定提示词和候选股票数据输出，不能编造未提供的实时数据。",
-                },
-                {"role": "user", "content": prompt_text},
-            ],
-        },
-        timeout=180,
-    )
+    try:
+        response = requests.post(
+            base_url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "temperature": 0.4,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是短线右侧交易分析助手。必须严格依据用户给定提示词和候选股票数据输出，不能编造未提供的实时数据。",
+                    },
+                    {"role": "user", "content": prompt_text},
+                ],
+            },
+            timeout=180,
+        )
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError("Qwen 请求超时，请稍后重试。") from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError("Qwen 连接失败，请检查 QWEN_BASE_URL 是否正确。") from exc
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Qwen 请求异常: {exc}") from exc
 
     if response.status_code == 401:
-        raise RuntimeError("Qwen 401 Unauthorized，请检查 API Key 和区域 endpoint 是否匹配。")
+        raise RuntimeError(
+            "Qwen 401 Unauthorized。请检查 QWEN_API_KEY 是否正确，以及 key 是否与 QWEN_BASE_URL 所属区域匹配。"
+        )
+    if response.status_code == 403:
+        raise RuntimeError("Qwen 403 Forbidden。当前 key 可能没有该模型或区域的调用权限。")
+    if response.status_code == 404:
+        raise RuntimeError("Qwen 404 Not Found。请检查 QWEN_BASE_URL 是否填写了正确的接口地址。")
+    if response.status_code == 429:
+        raise RuntimeError("Qwen 429 Too Many Requests。请求过于频繁或额度受限。")
+    if 500 <= response.status_code < 600:
+        raise RuntimeError(f"Qwen 服务器错误: HTTP {response.status_code}。")
     if response.status_code != 200:
         raise RuntimeError(f"Qwen 调用失败: HTTP {response.status_code} {response.text[:500]}")
 
-    data = response.json()
-    return data["choices"][0]["message"]["content"].strip()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Qwen 返回内容不是合法 JSON: {response.text[:500]}") from exc
 
+    try:
+        content = data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        raise RuntimeError(f"Qwen 返回 JSON 结构异常: {json.dumps(data, ensure_ascii=False)[:800]}") from exc
 
-def save_report(market: str, text: str):
-    report_path = OUTPUT_DIR / f"stock_analysis_report_{market}.md"
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    report_path.write_text(text + "\n", encoding="utf-8")
-    return report_path
+    if not content:
+        raise RuntimeError("Qwen 返回成功，但内容为空。")
+
+    return content
 
 
 def main():
     market = get_market()
-    payload, source_file = build_payload(market)
 
-    if not payload:
-        save_report(market, f"# {market.upper()} 自动化股票精选报告\n\n今天没有找到可供分析的 Excel 候选池。")
-        print("⚠️ 未找到可分析的 Excel 文件。")
-        return
+    try:
+        payload, source_file, row_count = build_payload(market)
 
-    prompt = build_final_prompt(market, payload)
-    result = call_qwen(prompt)
-    report_path = save_report(market, result)
-    print(f"✅ 分析完成: {report_path}, source={source_file}")
+        if not source_file:
+            text = (
+                f"# {market.upper()} 自动化股票精选报告\n\n"
+                "未找到对应市场的 Excel 文件，无法进行分析。\n"
+                "请先确认扫描脚本是否成功生成 output 下的 Excel。"
+            )
+            path = save_report(market, text)
+            print(f"⚠️ 未找到 Excel 文件，已写入报告: {path}")
+            return
+
+        if not payload:
+            text = (
+                f"# {market.upper()} 自动化股票精选报告\n\n"
+                f"已找到 Excel 文件：{source_file}\n"
+                "但文件为空，或没有可用于分析的候选股票。"
+            )
+            path = save_report(market, text)
+            print(f"⚠️ Excel 为空，已写入报告: {path}")
+            return
+
+        print(f"📊 载入候选池完成：市场={market.upper()}，行数={row_count}，文件={source_file}")
+        prompt = build_final_prompt(market, payload)
+        result = call_qwen(prompt)
+        path = save_report(market, result)
+        print(f"✅ 分析完成: {path}")
+
+    except Exception as exc:
+        error_text = (
+            f"# {market.upper()} 自动化股票精选报告\n\n"
+            "本次分析失败。\n\n"
+            f"错误信息：{exc}\n"
+        )
+        path = save_report(market, error_text)
+        print(f"❌ 分析失败，已写入报告: {path}")
+        raise
 
 
 if __name__ == "__main__":
