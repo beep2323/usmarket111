@@ -2,7 +2,8 @@ name: US Stock Scanner KST
 
 on:
   schedule:
-    - cron: '0 21 * * *' # 韩国时间 06:00
+    - cron: '0 20 * * *' # KST 05:00 during US DST
+    - cron: '0 21 * * *' # KST 06:00 during US Standard Time
   workflow_dispatch:
 
 jobs:
@@ -18,20 +19,46 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Decide Whether To Run
+        id: should_run
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_job=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NY_HOUR=$(TZ=America/New_York date +%H)
+          if [ "$NY_HOUR" = "16" ]; then
+            echo "run_job=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_job=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop Early If Not Target Time
+        if: steps.should_run.outputs.run_job != 'true'
+        run: |
+          echo "Skipping this run because it does not match the current US DST/standard-time target."
+          exit 0
+
       - name: Install Dependencies
+        if: steps.should_run.outputs.run_job == 'true'
         run: |
           pip install yfinance pandas openpyxl requests googletrans==4.0.0-rc1
 
       - name: Prepare Directories
+        if: steps.should_run.outputs.run_job == 'true'
         run: |
           mkdir -p output
           mkdir -p ticker_storage
           mkdir -p cache
 
       - name: Run US Scanner
+        if: steps.should_run.outputs.run_job == 'true'
         run: python scanner.py --use-data-cache
 
       - name: Send US Excel To Telegram
+        if: steps.should_run.outputs.run_job == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
