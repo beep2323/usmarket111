@@ -1,9 +1,8 @@
-name: Daily Stock Scanner KST
+name: US Stock Scanner KST
 
 on:
   schedule:
-    - cron: '0 21 * * *' # KST 06:00 -> US
-    - cron: '0 11 * * *' # KST 20:00 -> KR
+    - cron: '0 21 * * *' # KST 06:00
   workflow_dispatch:
 
 jobs:
@@ -28,33 +27,27 @@ jobs:
           mkdir -p output
           mkdir -p ticker_storage
           mkdir -p cache
-          mkdir -p cache_kr
 
       - name: Run US Scanner
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 21 * * *'
         run: python scanner.py --use-data-cache
 
-      - name: Run KR Scanner
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 11 * * *'
-        run: python ko_scanner.py --use-data-cache
-
-      - name: Analyze Stocks With Qwen
+      - name: Analyze US Stocks With Qwen
         env:
           QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
           QWEN_MODEL: ${{ secrets.QWEN_MODEL }}
           QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
-        run: python analyze_with_qwen.py
+        run: python analyze_with_qwen.py us
 
       - name: Send Telegram Notification
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SEND_EXCEL_ATTACHMENTS: ${{ secrets.SEND_EXCEL_ATTACHMENTS }}
-        run: python notif.py
+        run: python notif.py us
 
       - name: Upload Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Stock_Report
+          name: us-stock-report
           path: output/*
