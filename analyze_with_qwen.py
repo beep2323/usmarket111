@@ -191,7 +191,7 @@ def call_qwen(prompt_text: str) -> str:
 
     if response.status_code == 401:
         raise RuntimeError(
-            "Qwen 401 Unauthorized。请检查 QWEN_API_KEY 是否正确，以及 key 是否与 QWEN_BASE_URL 所属区域匹配。"
+            f"Qwen 401 Unauthorized。model={model}, base_url={base_url}, response={response.text[:500]}"
         )
     if response.status_code == 403:
         raise RuntimeError("Qwen 403 Forbidden。当前 key 可能没有该模型或区域的调用权限。")
