@@ -2,7 +2,7 @@ name: US Stock Scanner KST
 
 on:
   schedule:
-    - cron: '0 21 * * *' # KST 06:00
+    - cron: '0 21 * * *' # 韩国时间 06:00
   workflow_dispatch:
 
 jobs:
@@ -31,18 +31,10 @@ jobs:
       - name: Run US Scanner
         run: python scanner.py --use-data-cache
 
-      - name: Analyze US Stocks With Qwen
-        env:
-          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
-          QWEN_MODEL: ${{ secrets.QWEN_MODEL }}
-          QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
-        run: python analyze_with_qwen.py us
-
-      - name: Send Telegram Notification
+      - name: Send US Excel To Telegram
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          SEND_EXCEL_ATTACHMENTS: ${{ secrets.SEND_EXCEL_ATTACHMENTS }}
         run: python notif.py us
 
       - name: Upload Artifact
