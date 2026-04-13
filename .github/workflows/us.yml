@@ -55,7 +55,7 @@ jobs:
 
       - name: Run US Scanner
         if: steps.should_run.outputs.run_job == 'true'
-        run: python scanner.py --use-data-cache
+        run: python early_scanner.py --use-data-cache
 
       - name: Send US Excel To Telegram
         if: steps.should_run.outputs.run_job == 'true'
